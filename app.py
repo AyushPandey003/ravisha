@@ -57,7 +57,7 @@ async def startup_event():
 
 
 async def transcribe_audio(audio_data: np.ndarray, language: Optional[str] = None) -> tuple[str, str]:
-    """Transcribe audio using Gemini's audio understanding with improved Hindi detection"""
+    """Transcribe audio using Gemini's audio understanding with improved language detection"""
     if not genai_client:
         raise Exception("Gemini client not initialized.")
     
@@ -72,9 +72,14 @@ async def transcribe_audio(audio_data: np.ndarray, language: Optional[str] = Non
         
         # Determine language instruction
         if language and language != "auto":
-            lang_instruction = "Transcribe this audio in Hindi (Devanagari script)" if language == "hi" else "Transcribe this audio in English"
+            if language == "hi":
+                lang_instruction = "Transcribe this audio in Hindi (Devanagari script)"
+            elif language == "bn":
+                lang_instruction = "Transcribe this audio in Bengali (বাংলা script)"
+            else:
+                lang_instruction = "Transcribe this audio in English"
         else:
-            lang_instruction = "Transcribe this audio. Detect the language automatically. If it's Hindi, use Devanagari script. If it's English, use English."
+            lang_instruction = "Transcribe this audio. Detect the language automatically. If it's Hindi, use Devanagari script. If it's Bengali, use Bengali script (বাংলা). If it's English, use English."
         
         # Create transcription prompt
         prompt = f"""{lang_instruction}
@@ -83,6 +88,7 @@ Important:
 - Output ONLY the transcribed text, nothing else
 - Do not add any explanations, labels, or formatting
 - If Hindi, use Devanagari script (देवनागरी)
+- If Bengali, use Bengali script (বাংলা)
 - If English, use standard English text"""
         
         # Get transcription from Gemini
@@ -91,34 +97,64 @@ Important:
         
         # Detect language from transcription
         has_devanagari = text and any('\u0900' <= char <= '\u097F' for char in text)
+        has_bengali = text and any('\u0980' <= char <= '\u09FF' for char in text)
         
         hindi_phonetic_patterns = [
             'kya', 'hai', 'hoon', 'mein', 'main', 'aap', 'tum', 'hum',
             'kaise', 'kahan', 'kab', 'kyun', 'nahin', 'nahi', 'thik',
             'accha', 'theek', 'bahut', 'bohot', 'kuch', 'koi', 'yeh', 'woh'
         ]
+        
+        bengali_phonetic_patterns = [
+            'ami', 'tumi', 'apni', 'kemon', 'achen', 'bhalo', 'kharap',
+            'ki', 'keno', 'kothai', 'kobe', 'ektu', 'kichu', 'ache', 'nai'
+        ]
+        
         words = text.lower().split()
         hindi_pattern_count = sum(1 for word in words if any(pattern in word for pattern in hindi_phonetic_patterns))
+        bengali_pattern_count = sum(1 for word in words if any(pattern in word for pattern in bengali_phonetic_patterns))
         
-        detected_lang = "hi" if (has_devanagari or hindi_pattern_count >= 2) else "en"
+        # Determine detected language
+        if has_bengali or bengali_pattern_count >= 2:
+            detected_lang = "bn"
+        elif has_devanagari or hindi_pattern_count >= 2:
+            detected_lang = "hi"
+        else:
+            detected_lang = "en"
         
         print(f"[transcribe] Detected language: {detected_lang}, Text: {text[:100]}...")
         
-        # If auto-detect and appears to be Hindi but not in Devanagari, retry with Hindi forced
-        if (not language or language == "auto") and hindi_pattern_count >= 2 and not has_devanagari:
-            print(f"[transcribe] Hindi detected, re-transcribing with Hindi forced...")
-            
-            prompt_hindi = """Transcribe this audio in Hindi using ONLY Devanagari script (देवनागरी लिपि).
+        # If auto-detect and appears to be Hindi/Bengali but not in proper script, retry
+        if not language or language == "auto":
+            if hindi_pattern_count >= 2 and not has_devanagari:
+                print(f"[transcribe] Hindi detected, re-transcribing with Hindi forced...")
+                
+                prompt_hindi = """Transcribe this audio in Hindi using ONLY Devanagari script (देवनागरी लिपि).
 
 Important:
 - Output ONLY the Hindi transcription in Devanagari
 - Do not use Roman/Latin script
 - Do not add explanations"""
+                
+                response = genai_client.generate_content([audio_file, prompt_hindi])
+                text = response.text.strip()
+                detected_lang = "hi"
+                print(f"[transcribe] Hindi transcription: {text[:100]}...")
             
-            response = genai_client.generate_content([audio_file, prompt_hindi])
-            text = response.text.strip()
-            detected_lang = "hi"
-            print(f"[transcribe] Hindi transcription: {text[:100]}...")
+            elif bengali_pattern_count >= 2 and not has_bengali:
+                print(f"[transcribe] Bengali detected, re-transcribing with Bengali forced...")
+                
+                prompt_bengali = """Transcribe this audio in Bengali using ONLY Bengali script (বাংলা লিপি).
+
+Important:
+- Output ONLY the Bengali transcription in Bengali script
+- Do not use Roman/Latin script
+- Do not add explanations"""
+                
+                response = genai_client.generate_content([audio_file, prompt_bengali])
+                text = response.text.strip()
+                detected_lang = "bn"
+                print(f"[transcribe] Bengali transcription: {text[:100]}...")
         
         return text, detected_lang
         
@@ -136,7 +172,8 @@ def detect_crisis_keywords(text: str) -> bool:
     crisis_keywords = [
         'suicide', 'kill myself', 'end my life', 'want to die', 'self harm',
         'hurt myself', 'no reason to live', 'better off dead',
-        'आत्महत्या', 'मरना चाहता', 'जान देना', 'खुद को नुकसान'
+        'आत्महत्या', 'मरना चाहता', 'जान देना', 'खुद को नुकसान',
+        'আত্মহত্যা', 'মরতে চাই', 'জীবন শেষ', 'নিজেকে আঘাত'
     ]
     return any(keyword in text.lower() for keyword in crisis_keywords)
 
@@ -146,9 +183,17 @@ def detect_crisis_keywords(text: str) -> bool:
 
 async def get_ai_response(prompt: str, language: str = "en", max_retries: int = 3) -> str:
     """Get AI response from Gemini with retry logic"""
-    lang_instruction = "Hindi (हिंदी)" if language == "hi" else "English"
+    if language == "hi":
+        lang_instruction = "Hindi (हिंदी)"
+        script_instruction = "YOU MUST USE HINDI DEVANAGARI SCRIPT ONLY (जैसे: नमस्ते, मैं अर्निश हूं)"
+    elif language == "bn":
+        lang_instruction = "Bengali (বাংলা)"
+        script_instruction = "YOU MUST USE BENGALI SCRIPT ONLY (যেমন: নমস্কার, আমি অর্নিশ)"
+    else:
+        lang_instruction = "English"
+        script_instruction = ""
     
-    system_context = f"""You are Arnish, a compassionate and professional mental health support assistant specialized in providing emotional support and guidance keep your responses brief if some techniques were asked give best trending mental health tips in 10 to 15 sentences your response should be of minimum 3 sentence max 15.
+    system_context = f"""You are Arnish, a compassionate and professional mental health support assistant specialized in providing emotional support and guidance keep your responses brief if some techniques were asked give best trending mental health tips in 15 to 20 sentences your response should be of minimum 3 sentence max 15.
 
 Your role:
 - Provide empathetic, supportive responses
@@ -167,9 +212,10 @@ Guidelines:
 
 CRITICAL Language Instruction: 
 - If language is Hindi (hi), you MUST respond ONLY in Hindi using Devanagari script (देवनागरी लिपि).
+- If language is Bengali (bn), you MUST respond ONLY in Bengali using Bengali script (বাংলা লিপি).
 - If language is English (en), respond only in English.
 - Current language: {lang_instruction}
-{f"- YOU MUST USE HINDI DEVANAGARI SCRIPT ONLY (जैसे: नमस्ते, मैं रविशा हूं)" if language == "hi" else ""}
+{f"- {script_instruction}" if script_instruction else ""}
 
 User message: {prompt}
 
@@ -196,8 +242,10 @@ Your response:"""
             break
     
     # Fallback responses based on language
-    if language.startswith('hi'):
+    if language == 'hi':
         return "मुझे अभी आपकी बात समझने में परेशानी हो रही है। कृपया फिर से कोशिश करें।"
+    elif language == 'bn':
+        return "আমি এখন আপনার কথা বুঝতে সমস্যা হচ্ছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
     return "I'm having trouble processing that right now. Please try again in a moment."
 
 
@@ -495,6 +543,7 @@ async def get_client():
                     <select id="language">
                         <option value="en">English</option>
                         <option value="hi">हिंदी (Hindi)</option>
+                        <option value="bn">বাংলা (Bengali)</option>
                         <option value="auto">Auto-detect</option>
                     </select>
                 </div>
@@ -864,7 +913,9 @@ async def text_to_speech(text: str, language: str = "en"):
         lang_map = {
             "en": "en",
             "hi": "hi",
-            "hi-IN": "hi"
+            "hi-IN": "hi",
+            "bn": "bn",
+            "bn-IN": "bn"
         }
         tts_lang = lang_map.get(language, "en")
         
