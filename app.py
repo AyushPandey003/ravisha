@@ -23,7 +23,7 @@ from gtts import gTTS
 import soundfile as sf
 
 SAMPLE_RATE = 16000
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyB1YM3JUNwe9BtenrBYI0P2NaNQFQzVvEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 app = FastAPI(title="Arnish - Mental Health AI Assistant API")
 
@@ -45,7 +45,7 @@ async def load_models():
     
     print("[startup] Initializing Gemini client for transcription and AI responses")
     genai.configure(api_key=GOOGLE_API_KEY)
-    genai_client = genai.GenerativeModel('gemini-2.0-flash-exp')
+    genai_client = genai.GenerativeModel('gemini-2.5-flash-lite')
     print("[startup] Gemini client ready")
 
 
